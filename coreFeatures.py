@@ -2,14 +2,13 @@
 import os
 from os import path as p
 import sys
-import numpy as np
 import pandas as pd
-from tqdm import tqdm
-import multiprocessing as mp
-import importlib
 import subprocess
 import argpass
-from custom_utils import pdb2df, area2df
+from util_coreFeatures import pdb2df, area2df, getPdbList, findCoreExterior, initialiseAminoAcidInformation
+from util_coreFeatures import get_counts_in_region, get_properties_in_region
+import multiprocessing
+import glob
 ########################################################################################
 ########################################################################################
 # get inputs
@@ -29,172 +28,73 @@ def read_inputs():
     # import config file and run input function to return variables
     try:
         config_module = __import__(configName)
-        inputDir, outputDir, msmsDir, msmsExe, pdb2xyzrExe, aminoAcidTable = config_module.inputs()
-        return inputDir, outputDir, msmsDir, msmsExe, pdb2xyzrExe, aminoAcidTable
+        inputDir, outDir, msmsDir, aminoAcidTable = config_module.inputs()
+        return inputDir, outDir, msmsDir, aminoAcidTable
     except ImportError:
         print(f"Error: Can't to import module '{configName}'. Make sure the input exists!")
         print("HOPE IS THE FIRST STEP ON THE ROAD TO DISAPPOINTMENT")
         exit()
 
 ########################################################################################
+def process_pdbs_worker(pdbFile, outDir, aminoAcidNames, aminoAcidProperties, msmsDir):
+    proteinName = p.splitext(p.basename(pdbFile))[0]
+    pdbDf = pdb2df(pdbFile=pdbFile)
+    exteriorDf, coreDf = findCoreExterior(pdbFile=pdbFile, pdbDf=pdbDf,
+                                          proteinName=proteinName, msmsDir=msmsDir,
+                                          outDir=outDir)
+    featuresDict = get_counts_in_region(coreDf=coreDf, extDf=exteriorDf, pdbDf=pdbDf,
+                                        proteinName=proteinName, aminoAcidNames=aminoAcidNames)
+    featuresDict = get_properties_in_region(featuresDict=featuresDict,
+                                            proteinName=proteinName,
+                                            aminoAcidNames=aminoAcidNames,
+                                            aminoAcidProperties=aminoAcidProperties)
+    featuresDf = pd.concat(featuresDict.values(), axis=1)
 
-def initialiseAminoAcidInformation(aminoAcidTable):
-    AminoAcidNames = ["ALA","ARG","ASN","ASP","CYS",
-                      "GLN","GLU","GLY","HIS","ILE",
-                      "LEU","LYS","MET","PHE","PRO",
-                      "SER","THR","TRP","TYR","VAL"]  
-
-    # read file with amino acids features
-    aminoAcidProperties = pd.read_csv(
-        aminoAcidTable, sep="\t", index_col=1
-    )
-    aminoAcidProperties.index = [el.upper() for el in aminoAcidProperties.index]
-    aminoAcidProperties = aminoAcidProperties.iloc[:, 1:]
-
-    return AminoAcidNames, aminoAcidProperties
-
-########################################################################################
-def getPdbList(dir):
-    pdbList=[]
-    idList=[]
-    for file in os.listdir(dir):
-        fileData = p.splitext(file)
-        if fileData[1] == '.pdb':
-            idList.append(fileData[0])
-            pdbList.append(p.join(dir,file))
-    return idList, pdbList
+    # Save featuresDf to a CSV file
+    output_filename = p.join(outDir, f"{proteinName}_features.csv")
+    featuresDf.to_csv(output_filename, index=True)
+    print(f"Features for {proteinName} have been generated and saved to {output_filename}")
 
 ########################################################################################
-def findCoreExterior(pdbFile,msmsDir,pdbDf,proteinName,outDir):
-    # change working directory so MSMS can find all the files it needs
-    os.chdir(msmsDir)
-    # find executables
-    pdb2xyzrExe = "./pdb_to_xyzr"
-    msmsExe = "./msms.x86_64Linux2.2.6.1"
-    # convert pdb file to MSMS xyzr file 
-    xyzrFile = p.join(outDir, f'{proteinName}.xyzr')
-    command = f"{pdb2xyzrExe} {pdbFile} > {xyzrFile}"
-    subprocess.run(command, shell=True)
-    # use MSMS to create an area file
-    areaOut = p.join(outDir,proteinName)
-    command = f"{msmsExe} -if {xyzrFile} -af {areaOut}"
-    subprocess.run(command, shell=True)
-    areaFile=p.join(outDir,f"{proteinName}.area")
-    # convert area file to dataframe, merge with main pdb dataframe
-    areaDf = area2df(areaFile=areaFile)
-    pdbDf = pd.concat([pdbDf,areaDf],axis=1)
-
-    # Group by residue and calculate the average SES score
-    meanSesPerResidue = pdbDf.groupby('RES_SEQ')['SES'].mean()
-
-    # Get residue sequences with average SES > 1
-    exteriorResiduesIndex = meanSesPerResidue[meanSesPerResidue > 1].index
-
-    # Split the DataFrame based on average SES > 1
-    exteriorDf = pdbDf[pdbDf['RES_SEQ'].isin(exteriorResiduesIndex)]
-    coreDf = pdbDf[~pdbDf['RES_SEQ'].isin(exteriorResiduesIndex)]
-
-    # clean up
-    os.remove(xyzrFile)
-    os.remove(areaFile)
-
-    return exteriorDf, coreDf
-########################################################################################
-def get_counts_in_region(coreDf,extDf,pdbDf,proteinName,aminoAcidNames):
-    featuresDict={}
-    for region, df in zip(["core","ext","protein"],[coreDf,extDf,pdbDf]):
-        # initialise a features dataframe with column names
-        columnNames=[]
-        columnNames.append(f'{region}.total')
-        for aminoAcid in aminoAcidNames:
-            columnNames.append(f'{region}.{aminoAcid}')
-        for element in ["C","N","O"]:
-            columnNames.append(f'{region}.{element}')
-        columnNames=columnNames.sort()
-        countsDf = pd.DataFrame(columns=columnNames,index=[proteinName])
-
-        # count elements [Carbon, Nitrogen, Oxygen]
-        for element in ["C","N","O"]:
-            try:
-                countsDf.loc[:,f'{region}.{element}'] = df["ELEMENT"].value_counts()[element]
-            except:
-                countsDf.loc[:,f'{region}.{element}'] = 0
-        # get unique residues only
-        uniqueResDf= df.drop_duplicates(subset=["RES_SEQ"])
-        totalRes=0
-        # add get residue counts
-        for aminoAcid in aminoAcidNames:
-            if aminoAcid in df["RES_NAME"].unique():
-                countsDf.loc[:,f'{region}.{aminoAcid}'] = uniqueResDf["RES_NAME"].value_counts()[aminoAcid]
-            else:
-                countsDf.loc[:,f'{region}.{aminoAcid}'] = 0
-            totalRes+=countsDf[f'{region}.{aminoAcid}']
-        countsDf[f"{region}.total"] = totalRes
-        featuresDict.update({f'{region}.counts':countsDf})
-    return featuresDict
-########################################################################################
-def get_properties_in_region(featuresDict, proteinName, aminoAcidNames, aminoAcidProperties):
-    # loop through three regions
-    for region in ["core","ext","protein"]:
-        # initialise dataframe with columnNames
-        columnNames=[]
-        for property in aminoAcidProperties.columns:
-            columnNames.append(f'{region}.{property}')
-        propertiesDf=pd.DataFrame(columns=columnNames,index=[proteinName])
-        # find count dataframe for corresponding region
-        countDf = featuresDict[f'{region}.counts']
-        for property in aminoAcidProperties:
-            propertyValue=0
-            for aminoAcid in aminoAcidNames:
-                aaCount = countDf.at[proteinName,f"{region}.{aminoAcid}"]
-                aaPropertyvalue = aminoAcidProperties.at[aminoAcid,property]
-                value = aaCount * aaPropertyvalue
-                propertyValue += value 
-
-            totalAminoAcids=countDf.at[proteinName,f'{region}.total']
-            if not totalAminoAcids == 0:
-                propertyValue = propertyValue / totalAminoAcids
-            propertiesDf[f'{region}.{property}'] = propertyValue
-        featuresDict.update({f'{region}.properties':propertiesDf})
-    return featuresDict
-########################################################################################
-def process_pdbs(pdbList, outDir, aminoAcidNames, aminoAcidProperties,msmsDir):
-    allFeaturesList=[]
-    for pdbFile in pdbList:
-        proteinName=p.splitext(p.basename(pdbFile))[0]
-        pdbDf = pdb2df(pdbFile=pdbFile)
-        exteriorDf, coreDf = findCoreExterior(pdbFile=pdbFile, pdbDf=pdbDf,
-                         proteinName=proteinName, msmsDir=msmsDir,
-                         outDir=outDir)
-        featuresDict = get_counts_in_region(coreDf=coreDf,extDf=exteriorDf,pdbDf=pdbDf,
-                                                                    proteinName=proteinName,
-                                                                    aminoAcidNames=aminoAcidNames)
-        featuresDict = get_properties_in_region(featuresDict=featuresDict,
-                                                proteinName=proteinName,
-                                                aminoAcidNames=aminoAcidNames,
-                                                aminoAcidProperties=aminoAcidProperties)
-        featuresDf = pd.concat(featuresDict.values(),axis=1)
-        allFeaturesList.append(featuresDf)
-    allFeaturesDf=pd.concat(allFeaturesList,axis=0)
-
-    allFeaturesDf.to_csv(p.join(outDir,"core_features.csv"),index=True)
-
+def process_pdbs(pdbList, outDir, aminoAcidNames, aminoAcidProperties, msmsDir):
+    # Use multiprocessing to parallelize the processing of pdbList
+    num_processes = multiprocessing.cpu_count()
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        pool.starmap(process_pdbs_worker, [(pdbFile, outDir, aminoAcidNames, aminoAcidProperties, msmsDir) for pdbFile in pdbList])
 ########################################################################################
 def main():
     # load user inputs
-    read_inputs()
-    outDir=os.makedirs(outputDir, exist_ok=True)
+    inputDir, outDir, msmsDir,aminoAcidTable = read_inputs()
+    os.makedirs(outDir, exist_ok=True)
     # initialise amino acid data
     aminoAcidNames, aminoAcidProperties = initialiseAminoAcidInformation(aminoAcidTable)
     # get list of pdbFiles in pdbDir
     idList, pdbList = getPdbList(inputDir)
 
-    # loop through permutations of orb and {region}.values
+    # Process pdbList using multiprocessing
     process_pdbs(pdbList=pdbList,
-                    outDir=outDir, 
-                    aminoAcidNames=aminoAcidNames, aminoAcidProperties=aminoAcidProperties,
+                  outDir=outDir, 
+                  aminoAcidNames=aminoAcidNames,
+                    aminoAcidProperties=aminoAcidProperties,
                     msmsDir=msmsDir)
 
-    print("\nAll features have been generated and saved!")                
+    # Collect all CSV files, merge them into one DataFrame
+    all_dataframes = []
+    for csv_file in glob.glob(os.path.join(outDir, "*_features.csv")):
+        df = pd.read_csv(csv_file, index_col=0)
+        all_dataframes.append(df)
+
+    merged_df = pd.concat(all_dataframes, axis=0)
+
+    # Save the merged DataFrame to a CSV file
+    merged_csv_path = os.path.join(outDir, "coreFeatures.csv")
+    merged_df.to_csv(merged_csv_path, index=True)
+    print(f"All features have been merged and saved to {merged_csv_path}")
+
+    # Delete the original CSV files
+    for csv_file in glob.glob(os.path.join(outDir, "*_features.csv")):
+        os.remove(csv_file)
+
+    print("Original CSV files have been deleted.")
 ########################################################################################
 main()
