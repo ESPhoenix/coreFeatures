@@ -1,10 +1,10 @@
 # Core Features
 
-coreFeatures is a feature generation method that leverages the program MSMS to separate a protein structure (supplied as a PDB file) into core and exterior regions.
-The following features are generated for each of these regions
-    -> Element Counts
-    -> Amino Acid Counts
-    -> Average Amino Acid Properties
+coreFeatures is a feature generation method that leverages the program MSMS to separate a protein structure (supplied as a PDB file) into core and exterior regions.\n
+The following features are generated for each of these regions:\n
+\t-> Element Counts\n
+\t-> Amino Acid Counts\n
+\t-> Average Amino Acid Properties\n
 
 ## Clone Repository
 
