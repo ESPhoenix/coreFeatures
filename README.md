@@ -1,4 +1,4 @@
-# Core Features
+# coreFeatures
 
 **coreFeatures** is a feature generation method that leverages the program MSMS to separate a protein structure (supplied as a PDB file) into core and exterior regions.
 
