@@ -9,6 +9,7 @@ from util_coreFeatures import pdb2df, area2df, getPdbList, findCoreExterior, ini
 from util_coreFeatures import get_counts_in_region, get_properties_in_region
 import multiprocessing
 import glob
+from tqdm import tqdm
 ########################################################################################
 ########################################################################################
 # get inputs
@@ -53,14 +54,15 @@ def process_pdbs_worker(pdbFile, outDir, aminoAcidNames, aminoAcidProperties, ms
     # Save featuresDf to a CSV file
     output_filename = p.join(outDir, f"{proteinName}_features.csv")
     featuresDf.to_csv(output_filename, index=True)
-    print(f"Features for {proteinName} have been generated and saved to {output_filename}")
 
 ########################################################################################
 def process_pdbs(pdbList, outDir, aminoAcidNames, aminoAcidProperties, msmsDir):
     # Use multiprocessing to parallelize the processing of pdbList
     num_processes = multiprocessing.cpu_count()
     with multiprocessing.Pool(processes=num_processes) as pool:
-        pool.starmap(process_pdbs_worker, [(pdbFile, outDir, aminoAcidNames, aminoAcidProperties, msmsDir) for pdbFile in pdbList])
+        pool.starmap(process_pdbs_worker,
+                     tqdm( [(pdbFile, outDir, aminoAcidNames, aminoAcidProperties, msmsDir) for pdbFile in pdbList],
+                     total = len(pdbList)))
 ########################################################################################
 def main():
     # load user inputs
@@ -79,22 +81,21 @@ def main():
                     msmsDir=msmsDir)
 
     # Collect all CSV files, merge them into one DataFrame
+    mergedCsvPath = os.path.join(outDir, "coreFeatures.csv")
+    print(f"Combining temporary coreFeatures files into {mergedCsvPath}")
     all_dataframes = []
     for csv_file in glob.glob(os.path.join(outDir, "*_features.csv")):
         df = pd.read_csv(csv_file, index_col=0)
         all_dataframes.append(df)
 
     merged_df = pd.concat(all_dataframes, axis=0)
-
     # Save the merged DataFrame to a CSV file
-    merged_csv_path = os.path.join(outDir, "coreFeatures.csv")
-    merged_df.to_csv(merged_csv_path, index=True)
-    print(f"All features have been merged and saved to {merged_csv_path}")
+    merged_df.to_csv(mergedCsvPath, index=True)
+    print(f"All features have been merged and saved to {mergedCsvPath}")
 
     # Delete the original CSV files
     for csv_file in glob.glob(os.path.join(outDir, "*_features.csv")):
         os.remove(csv_file)
 
-    print("Original CSV files have been deleted.")
 ########################################################################################
 main()

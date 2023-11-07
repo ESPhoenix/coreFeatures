@@ -109,11 +109,11 @@ def findCoreExterior(pdbFile,msmsDir,pdbDf,proteinName,outDir):
     # convert pdb file to MSMS xyzr file 
     xyzrFile = p.join(outDir, f'{proteinName}.xyzr')
     command = f"{pdb2xyzrExe} {pdbFile} > {xyzrFile}"
-    subprocess.run(command, shell=True)
+    subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # use MSMS to create an area file
     areaOut = p.join(outDir,proteinName)
     command = f"{msmsExe} -if {xyzrFile} -af {areaOut}"
-    subprocess.run(command, shell=True)
+    subprocess.run(command, shell=True,stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     areaFile=p.join(outDir,f"{proteinName}.area")
     # convert area file to dataframe, merge with main pdb dataframe
     areaDf = area2df(areaFile=areaFile)
