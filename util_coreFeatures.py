@@ -3,6 +3,7 @@ from os import path as p
 import numpy as np
 import pandas as pd
 import subprocess
+from shutil import copy
 ###########################################################################################################
 def pdb2df(pdbFile):
     columns = ['ATOM', 'ATOM_ID', 'ATOM_NAME', 'RES_NAME',
@@ -89,18 +90,39 @@ def initialiseAminoAcidInformation(aminoAcidTable):
     return AminoAcidNames, aminoAcidProperties
 
 ########################################################################################
-def getPdbList(dir):
-    pdbList=[]
-    idList=[]
-    for file in os.listdir(dir):
-        fileData = p.splitext(file)
-        if fileData[1] == '.pdb':
-            idList.append(fileData[0])
-            pdbList.append(p.join(dir,file))
-    return idList, pdbList
+def getPdbList(dir, deep=False):
+    pdbList = []
+    idList = []
 
+    if deep:
+        # Search in all subdirectories
+        for root, dirs, files in os.walk(dir):
+            for file in files:
+                if file.endswith(".pdb"):
+                    idList.append(p.splitext(file)[0])
+                    pdbList.append(p.join(root, file))
+        
+    else:
+        # Search only in the specified directory
+        for file in os.listdir(dir):
+            if file.endswith(".pdb"):
+                idList.append(p.splitext(file)[0])
+                pdbList.append(p.join(dir, file))
+
+    return idList, pdbList
 ########################################################################################
 def findCoreExterior(pdbFile,msmsDir,pdbDf,proteinName,outDir):
+    # deal with dots in filename (tadas is a fool)
+    delProt = False
+    if '.' in proteinName:
+        newProtName = proteinName.replace('.','_')
+        noDotPdb = p.join(outDir,f'{newProtName}.pdb')
+        copy(pdbFile,noDotPdb)
+        pdbFile = noDotPdb
+        proteinName = newProtName
+        delProt = True
+        
+
     # change working directory so MSMS can find all the files it needs
     os.chdir(msmsDir)
     # find executables
@@ -132,8 +154,11 @@ def findCoreExterior(pdbFile,msmsDir,pdbDf,proteinName,outDir):
     # clean up
     os.remove(xyzrFile)
     os.remove(areaFile)
+    if delProt:
+        os.remove(pdbFile)
 
     return exteriorDf, coreDf
+    
 ########################################################################################
 def get_counts_in_region(coreDf,extDf,pdbDf,proteinName,aminoAcidNames):
     featuresDict={}
